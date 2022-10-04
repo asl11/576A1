@@ -11,7 +11,7 @@ def generate_data():
     :return: X: input data, y: given labels
     '''
     np.random.seed(0)
-    X, y = datasets.make_moons(200, noise=0.20)
+    X, y = datasets.make_circles(200, noise=0.20)
     return X, y
 
 
@@ -82,7 +82,7 @@ class NeuralNetwork(object):
             result = np.tanh([z])[0]
             return result
         elif type == "Sigmoid":
-            return sp.special.expit(z)
+            return 1 / (1 + np.exp(-z))
         elif type == "ReLU":
             return z * (z > 0)
         return None
@@ -221,17 +221,143 @@ class NeuralNetwork(object):
         '''
         plot_decision_boundary(lambda x: self.predict(x), X, y)
 
+class Layer(object):
+    def __init__(self, is_final, nn_input_dim, nn_output_dim, actFun_type='tanh', reg_lambda=0.01, seed=0):
+        self.nn_input_dim = nn_input_dim
+        self.nn_output_dim = nn_output_dim
+        self.actFun_type = actFun_type
+        self.reg_lambda = reg_lambda
+        self.is_final = is_final
+
+        np.random.seed(seed)
+        self.W = np.random.randn(self.nn_input_dim, self.nn_output_dim) / np.sqrt(self.nn_input_dim)
+        self.b = np.zeros((1, self.nn_output_dim))
+
+    def feedforward(self, X, actFun):
+        # Classic z = xw + b function
+
+        self.z = np.dot(X, self.W) + self.b
+
+        if self.is_final:
+            tempresult = np.exp(self.z)
+            self.probs = tempresult / np.sum(tempresult, axis=1, keepdims=True)
+        else:
+            self.a = actFun(self.z)
+
+class DeepNeuralNetwork(NeuralNetwork):
+    def __init__(self, num_layers, nn_input_dim, nn_hidden_dim, nn_output_dim, actFun_type='tanh', reg_lambda=0.01, seed=0):
+        self.nn_input_dim = nn_input_dim
+        self.nn_hidden_dim = nn_hidden_dim
+        self.nn_output_dim = nn_output_dim
+        self.actFun_type = actFun_type
+        self.reg_lambda = reg_lambda
+        self.num_layers = num_layers
+
+        # initialize the weights and biases done in Layer, just initialize the layers here
+
+        self.layers = []
+        first = Layer(False, self.nn_input_dim, self.nn_hidden_dim, self.actFun_type, seed)
+        self.layers.append(first)
+        for i in range(self.num_layers - 2):
+            layer = Layer(False, self.nn_hidden_dim, self.nn_hidden_dim, self.actFun_type, seed)
+            self.layers.append(layer)
+        last = Layer(True, self.nn_hidden_dim, self.nn_output_dim, self.actFun_type, seed)
+        self.layers.append(last)
+
+    def feedforward(self, X, actFun):
+        self.feedforwards(X)
+
+    def feedforwards(self, X):
+
+        f = lambda x: self.actFun(x, type=self.actFun_type)
+        self.layers[0].feedforward(X, f)
+        for i in range(self.num_layers - 2):
+            self.layers[i+1].feedforward(self.layers[i].a, f)
+        self.layers[self.num_layers - 1].feedforward(self.layers[self.num_layers - 2].a, f)
+        self.probs = self.layers[self.num_layers - 1].probs
+
+    def calculate_loss(self, X, y):
+        num_examples = len(X)
+        self.feedforwards(X)
+
+        loss = np.sum(-np.log(self.probs[range(num_examples), y]))
+
+        # Port the optional regularization
+        sum = 0
+        for i in range(self.num_layers - 1):
+            sum += np.sum(np.square(self.layers[i].W))
+        loss += self.reg_lambda / 2 * sum
+
+        return (1. / num_examples) * loss
+
+    def backprop(self, X, y):
+        num_examples = len(X)
+        dW = []
+        db = []
+        delta = []
+        for i in range(self.num_layers):
+            dW.append([])
+            db.append([])
+            delta.append([])
+
+        delta[self.num_layers - 1] = self.probs
+        delta[self.num_layers - 1][range(num_examples), y] -= 1
+
+        final = self.num_layers - 1
+        dW[final] = self.layers[final - 1].a.T.dot(delta[final])
+        db[final] = np.sum(delta[final], axis=0, keepdims=True)
+
+        for i in range(self.num_layers - 2, -1, -1):
+            if i == 0:
+                break
+            delta[i] = delta[i + 1].dot(self.layers[i + 1].W.T) * self.diff_actFun(self.layers[i].z, self.actFun_type)
+            dW[i] = (self.layers[i - 1].a.T).dot(delta[i])
+            db[i] = np.sum(delta[i], axis=0, keepdims=True)
+
+        delta[0] = delta[1].dot(self.layers[1].W.T) * self.diff_actFun(self.layers[0].z, self.actFun_type)
+        dW[0] = (X.T).dot(delta[0])
+        db[0] = np.sum(delta[0], axis=0, keepdims=True)
+
+        return dW, db
+
+    def fit_model(self, X, y, epsilon=0.01, num_passes=20000, print_loss=True):
+        # Gradient Descent
+        for i in range(0, num_passes):
+            # Forward propagation
+            self.feedforwards(X)
+            # Backpropagation
+            dW, db = self.backprop(X, y)
+
+            for i in range(self.num_layers - 1):
+                dW[i] += self.reg_lambda * self.layers[i].W
+                self.layers[i].W += -epsilon * dW[i]
+                self.layers[i].b += -epsilon * db[i]
+
+            # Optionally print the loss.
+            # This is expensive because it uses the whole dataset, so we don't want to do it too often.
+            if print_loss and i % 1000 == 0:
+                print("Loss after iteration %i: %f" % (i, self.calculate_loss(X, y)))
+
+    def iter_layers(self):
+        for layer in self.layers:
+            print(layer.W.shape)
 
 def main():
 
     # generate and visualize Make-Moons dataset
     X, y = generate_data()
+    newY = []
+    for line in y:
+        if line == 0:  # female
+            newY.append([1, 0])
+        else:
+            newY.append([0, 1])
 
     # plt.scatter(X[:, 0], X[:, 1], s=40, c=y, cmap=plt.cm.Spectral)
     # plt.show()
 
 
-    model = NeuralNetwork(nn_input_dim=2, nn_hidden_dim=500 , nn_output_dim=2, actFun_type='Tanh')
+    model = DeepNeuralNetwork(num_layers=5, nn_input_dim=2, nn_hidden_dim=15 , nn_output_dim=2, actFun_type='ReLU')
     model.fit_model(X,y)
     model.visualize_decision_boundary(X,y)
 
